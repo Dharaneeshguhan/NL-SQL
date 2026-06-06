@@ -8,7 +8,7 @@ CURRENCY_SYMBOL = "Rs"
 OPENROUTER_MODELS = [
     "google/gemini-2.5-flash-lite",
 ]
-
+  
 OLLAMA_MODELS = ["llama3", "llama3.1", "llama3.2"]
 
 PROVIDER_OPENROUTER = "OpenRouter (cloud)"
