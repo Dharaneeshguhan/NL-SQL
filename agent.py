@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 import httpx
+import pandas as pd
 from openai import APIStatusError, OpenAI
 
 from database import describe_table, list_tables, run_query
@@ -83,7 +84,7 @@ TOOLS: list[dict[str, Any]] = [
 SYSTEM = """You are a schema-grounded analytics agent for a SQLite warehouse.
 
 Workflow:
-1. Use list_tables and describe_table to understand the schema before writing SQL.
+1. Use list_tables and describe_table to understand the schema before writing SQL, including any uploaded CSV tables.
 2. Draft SQL, optionally test with run_sql.
 3. When ready, respond with ONLY a JSON object (no markdown fences):
 
@@ -169,6 +170,84 @@ def _format_api_error(model_id: str, exc: Exception) -> str:
             "Restart the app and try again without emoji in your question."
         )
     return f"OpenRouter ({model_id}): {exc!r}"
+
+
+def _parse_json_list(raw_text: str) -> list[str]:
+    cleaned = re.sub(r"```json|```", "", raw_text).strip()
+    try:
+        result = json.loads(cleaned)
+        if isinstance(result, list):
+            return [str(item).strip() for item in result if item is not None]
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\[[\s\S]*\]", cleaned)
+    if match:
+        try:
+            result = json.loads(match.group())
+            if isinstance(result, list):
+                return [str(item).strip() for item in result if item is not None]
+        except json.JSONDecodeError:
+            pass
+
+    lines = [line.strip(" -*") for line in cleaned.splitlines() if line.strip()]
+    return [line for line in lines if line]
+
+
+def _summarize_dataframe(df: pd.DataFrame, max_rows: int = 8) -> str:
+    header = [f"Rows: {len(df)}, Columns: {len(df.columns)}"]
+    column_info = []
+    for col in df.columns[:20]:
+        dtype = str(df[col].dtype)
+        sample_values = df[col].dropna().astype(str).head(3).tolist()
+        sample_text = ", ".join(sample_values) if sample_values else "<none>"
+        column_info.append(f"{col} ({dtype}) sample: {sample_text}")
+    summary = ["Query result summary:", *header, "Column summary:", *column_info]
+
+    if not df.empty:
+        sample_rows = df.head(max_rows)
+        summary.append("Sample rows:")
+        summary.append(sample_rows.to_csv(index=False))
+
+    numeric = df.select_dtypes(include="number")
+    if not numeric.empty:
+        summary.append("Numeric column summary:")
+        summary.append(numeric.describe().round(2).to_csv())
+
+    return "\n".join(summary)
+
+
+def generate_business_insights(df: pd.DataFrame, api_key: str, model: str | None = None) -> list[str]:
+    if df is None or df.empty:
+        return []
+
+    client = _client(api_key)
+    model_id = resolve_model(model)
+    summary = _summarize_dataframe(df)
+    prompt = (
+        "You are an experienced business analyst. "
+        "Based on the following query result summary, provide 3 to 5 concise business insights. "
+        "Each insight should be one sentence, directly supported by the data, and useful for business decision-making. "
+        "Return only a JSON array of strings, with no markdown formatting or extra explanation."
+    )
+    messages = [
+        {"role": "system", "content": "You summarize data results into clear, actionable business insights."},
+        {"role": "user", "content": f"{prompt}\n\n{summary}"},
+    ]
+
+    try:
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_tokens=500,
+        )
+    except Exception as exc:
+        raise RuntimeError(_format_api_error(model_id, exc)) from exc
+
+    choice = response.choices[0]
+    content = choice.message.content or ""
+    insights = _parse_json_list(content)
+    return insights
 
 
 def _run_tool(name: str, inputs: dict) -> str:

@@ -1,6 +1,7 @@
 """NL-to-SQL Analytics Agent — Streamlit UI."""
 
 import io
+import html
 import os
 import sys
 import tempfile
@@ -30,8 +31,19 @@ try:
 except ImportError:
     FPDF = None
 
-from agent import resolve_model, run_analytics_agent, explain_sql
-from database import init_db, kpi_metrics, run_query, get_table_info
+from agent import (
+    explain_sql,
+    generate_business_insights,
+    resolve_model,
+    run_analytics_agent,
+)
+from database import (
+    init_db,
+    kpi_metrics,
+    run_query,
+    upload_csv_to_db,
+    get_table_info,
+)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -411,7 +423,33 @@ with st.sidebar:
     st.caption("Powered by **[OpenRouter](https://openrouter.ai)** — pick a free or paid model")
     st.markdown("---")
 
-    st.markdown("### 📋 Schema explorer")
+    st.markdown("### � Upload CSV")
+    st.caption("Upload a CSV file and query it as a new SQLite table.")
+    csv_file = st.file_uploader(
+        "Upload CSV",
+        type=["csv"],
+        help="The uploaded CSV will be loaded into a SQLite table that the AI can query.",
+    )
+    if csv_file is not None:
+        file_key = f"{csv_file.name}:{csv_file.size}"
+        if st.session_state.get("uploaded_file_key") != file_key:
+            with st.spinner("Loading CSV and creating a SQLite table..."):
+                try:
+                    table_name, preview = upload_csv_to_db(csv_file)
+                    st.session_state["uploaded_file_key"] = file_key
+                    st.session_state["uploaded_table_name"] = table_name
+                    st.session_state["uploaded_preview"] = preview
+                    st.success(f"CSV uploaded successfully as table `{table_name}`.")
+                    st.info("The uploaded table is now available in the schema explorer and can be queried naturally.")
+                except Exception as exc:
+                    st.error(f"CSV upload failed: {exc}")
+                    st.session_state.pop("uploaded_file_key", None)
+                    st.session_state.pop("uploaded_table_name", None)
+                    st.session_state.pop("uploaded_preview", None)
+
+    st.markdown("---")
+
+    st.markdown("### �📋 Schema explorer")
     for tname, tdata in get_table_info().items():
         with st.expander(f"**{tname}** · {tdata['count']} rows"):
             for col in tdata["columns"]:
@@ -470,7 +508,13 @@ c2.metric("Total revenue", f"${kpis['revenue']:,.2f}")
 c3.metric("Customers", kpis["customers"])
 c4.metric("Products", kpis["products"])
 
-st.markdown("---")
+if st.session_state.get("uploaded_preview") is not None:
+    st.markdown("### 📄 Uploaded CSV Preview")
+    st.write(f"Table: `{st.session_state.get('uploaded_table_name', 'uploaded_table')}`")
+    st.dataframe(st.session_state["uploaded_preview"], width="stretch")
+    st.markdown("---")
+else:
+    st.markdown("---")
 
 for idx, item in enumerate(st.session_state.history):
     if item["role"] == "user":
@@ -512,6 +556,17 @@ for idx, item in enumerate(st.session_state.history):
             _create_export_buttons(idx, item)
         if item.get("chart") is not None:
             st.plotly_chart(item["chart"], width="stretch")
+        if item.get("business_insights"):
+            with st.container():
+                st.markdown("### 📈 AI Business Insights")
+                insight_lines = "".join(
+                    f"<li style='margin-bottom:8px;'>{html.escape(insight)}</li>"
+                    for insight in item["business_insights"]
+                )
+                st.markdown(
+                    f"<div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-top:16px;'><ul style='margin:0;padding-left:18px;line-height:1.7;'>{insight_lines}</ul></div>",
+                    unsafe_allow_html=True,
+                )
 
 st.markdown("---")
 if "prefill" not in st.session_state:
@@ -573,6 +628,13 @@ if submit and question.strip():
                         result.get("chart_y", ""),
                         result.get("chart_title", "Chart"),
                     )
+                business_insights = []
+                if df is not None and not df.empty:
+                    try:
+                        business_insights = generate_business_insights(df, api_key, model=model)
+                    except Exception as exc:
+                        business_insights = [f"Insights unavailable: {exc}"]
+
                 assistant_item = {
                     "role": "assistant",
                     "question": question,
@@ -582,6 +644,7 @@ if submit and question.strip():
                     "chart": chart,
                     "error": err,
                     "tools": out.get("tool_trace", []),
+                    "business_insights": business_insights,
                 }
                 st.session_state.history.append(assistant_item)
                 st.session_state.query_history.append(

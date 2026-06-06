@@ -105,6 +105,51 @@ def _ro_connection() -> sqlite3.Connection:
     return sqlite3.connect(uri, uri=True)
 
 
+def _sanitize_table_name(name: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_]", "_", name.strip())
+    safe = re.sub(r"^[^a-zA-Z_]+", "", safe)
+    return safe or "uploaded_table"
+
+
+def _make_unique_table_name(base_name: str) -> str:
+    base = _sanitize_table_name(base_name)
+    name = base
+    index = 1
+    existing = set(list_tables())
+    while name in existing:
+        name = f"{base}_{index}"
+        index += 1
+    return name
+
+
+def upload_csv_to_db(uploaded_file, table_name: str | None = None, chunksize: int = 100_000) -> tuple[str, pd.DataFrame]:
+    if table_name is None:
+        table_name = Path(getattr(uploaded_file, "name", "uploaded_table")).stem
+    table_name = _make_unique_table_name(table_name)
+
+    uploaded_file.seek(0)
+    try:
+        preview = pd.read_csv(uploaded_file, nrows=5, low_memory=False)
+    except Exception as exc:
+        raise ValueError(f"Unable to read CSV preview: {exc}") from exc
+
+    uploaded_file.seek(0)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        for chunk in pd.read_csv(uploaded_file, chunksize=chunksize, low_memory=False):
+            chunk.to_sql(table_name, conn, if_exists="append", index=False, method="multi")
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        conn.commit()
+        raise
+    finally:
+        conn.close()
+
+    return table_name, preview
+
+
 def is_read_only_sql(sql: str) -> bool:
     stripped = sql.strip().rstrip(";")
     if not stripped:

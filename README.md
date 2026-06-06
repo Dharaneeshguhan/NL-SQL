@@ -14,6 +14,7 @@ Streamlit app that lets business users ask analytics questions in plain English.
 - **Query history** — access previous questions and reuse them quickly
 - **Export results** — download query results as PDF or Excel
 - **SQL explanation** — inspect generated SQL with a plain-English explanation
+- **AI Insights** — give insights about query result
 
 ## Setup
 
