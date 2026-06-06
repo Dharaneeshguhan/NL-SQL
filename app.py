@@ -514,12 +514,22 @@ for idx, item in enumerate(st.session_state.history):
             st.plotly_chart(item["chart"], width="stretch")
 
 st.markdown("---")
-prefill = st.session_state.pop("prefill", "")
+if "prefill" not in st.session_state:
+    st.session_state.prefill = ""
+prefill = st.session_state.prefill
+
+# If a voice recognition run placed a pending question, move it into the
+# canonical `question_input` BEFORE we create the text input widget. This
+# avoids Streamlit errors about modifying widget-backed session state after
+# the widget is instantiated.
+if st.session_state.get("pending_question"):
+    st.session_state["question_input"] = st.session_state.pop("pending_question")
+
 col_q, col_voice, col_run = st.columns([4, 1, 1])
 with col_q:
-    question = st.text_input(
+    st.text_input(
         "Question",
-        value=prefill,
+        key="question_input",
         placeholder="e.g. Which product categories drive the most revenue?",
         label_visibility="collapsed",
     )
@@ -532,12 +542,16 @@ with col_run:
 if voice_input:
     spoken_text = speech_to_text()
     if spoken_text:
-        st.session_state["prefill"] = spoken_text
-        st.session_state["spoken_text"] = spoken_text
+        # Store under a pending key so we can transfer it before the
+        # `question_input` widget is created on the next rerun.
+        st.session_state["pending_question"] = spoken_text
+        st.session_state.spoken_text = spoken_text
         st.rerun()
 
 if st.session_state.get("spoken_text"):
     st.success(f"Recognized: {st.session_state['spoken_text']}")
+
+question = st.session_state.get("question_input", "")
 
 if submit and question.strip():
     if not api_key:
