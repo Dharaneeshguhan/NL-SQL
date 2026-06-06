@@ -1,7 +1,9 @@
 """NL-to-SQL Analytics Agent — Streamlit UI."""
 
+import io
 import os
 import sys
+import tempfile
 
 # UTF-8 on Windows (prevents ascii codec errors with API / unicode text)
 if sys.platform == "win32":
@@ -10,8 +12,25 @@ if sys.platform == "win32":
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import textwrap
+from openpyxl.utils import get_column_letter
 
-from agent import resolve_model, run_analytics_agent
+try:
+    import speech_recognition as sr
+except ImportError:
+    sr = None
+
+try:
+    import whisper
+except ImportError:
+    whisper = None
+
+try:
+    from fpdf import FPDF
+except ImportError:
+    FPDF = None
+
+from agent import resolve_model, run_analytics_agent, explain_sql
 from database import init_db, kpi_metrics, run_query, get_table_info
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -195,8 +214,158 @@ def make_chart(df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, title:
     return fig
 
 
+def _df_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Results")
+        worksheet = writer.sheets["Results"]
+        for idx, col in enumerate(df.columns, start=1):
+            column_len = max(
+                df[col].astype(str).map(len).max(),
+                len(str(col)),
+            ) + 2
+            worksheet.column_dimensions[get_column_letter(idx)].width = min(column_len, 40)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def _load_whisper_model():
+    if whisper is None:
+        return None
+    try:
+        return whisper.load_model("tiny")
+    except Exception:
+        return None
+
+_whisper_model = None
+
+
+def speech_to_text() -> str:
+    if sr is None:
+        st.error("SpeechRecognition is not installed.")
+        return ""
+
+    recognizer = sr.Recognizer()
+
+    try:
+        with sr.Microphone() as source:
+            st.info("🎤 Listening... Speak now")
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+            audio = recognizer.listen(
+                source,
+                timeout=5,
+                phrase_time_limit=10,
+            )
+
+        st.info("🔄 Converting speech to text...")
+
+        if whisper is not None:
+            global _whisper_model
+            if _whisper_model is None:
+                _whisper_model = _load_whisper_model()
+            if _whisper_model:
+                wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp.write(wav_bytes)
+                    tmp_path = tmp.name
+                try:
+                    result = _whisper_model.transcribe(tmp_path)
+                    return result.get("text", "").strip()
+                finally:
+                    os.remove(tmp_path)
+
+        text = recognizer.recognize_google(audio)
+        return text
+
+    except sr.WaitTimeoutError:
+        st.error("No speech detected.")
+        return ""
+
+    except sr.UnknownValueError:
+        st.error("Could not understand audio.")
+        return ""
+
+    except Exception as e:
+        st.error(f"Voice Error: {e}")
+        return ""
+
+
+def _sql_report_pdf(question: str, answer: str, sql: str, df: pd.DataFrame) -> bytes:
+    if FPDF is None:
+        raise RuntimeError("PDF export is unavailable because the FPDF library is not installed.")
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "NL-to-SQL Query Report")
+    pdf.ln(10)
+    pdf.set_font("Helvetica", size=11)
+    pdf.multi_cell(0, 8, f"Question: {question}")
+    pdf.ln(1)
+    pdf.multi_cell(0, 8, f"Answer: {answer}")
+    pdf.ln(1)
+    pdf.multi_cell(0, 8, "SQL Query:")
+    pdf.set_font("Helvetica", size=10)
+    safe_sql = textwrap.fill(sql.replace("\n", " "), width=90, break_long_words=True, replace_whitespace=False)
+    pdf.multi_cell(0, 6, safe_sql)
+    if not df.empty:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Result preview:")
+        pdf.ln(8)
+        pdf.set_font("Helvetica", size=9)
+        preview = df.head(20)
+        for _, row in preview.iterrows():
+            row_text = " | ".join(str(value) for value in row.tolist())
+            safe_row = textwrap.fill(row_text, width=90, break_long_words=True, replace_whitespace=False)
+            if pdf.get_y() > pdf.h - 30:
+                pdf.add_page()
+            pdf.multi_cell(0, 6, safe_row)
+    output = pdf.output(dest="S")
+    if isinstance(output, str):
+        return output.encode("latin-1")
+    return output
+
+
+def _create_export_buttons(idx: int, item: dict) -> None:
+    if item.get("df") is None or item["df"].empty:
+        return
+    excel_bytes = _df_to_excel_bytes(item["df"])
+    pdf_bytes = None
+    try:
+        pdf_bytes = _sql_report_pdf(
+            item.get("question", ""),
+            item.get("content", ""),
+            item.get("sql", ""),
+            item["df"],
+        )
+    except Exception:
+        pdf_bytes = None
+
+    st.download_button(
+        label="Download Excel",
+        data=excel_bytes,
+        file_name=f"query_results_{idx + 1}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_xlsx_{idx}",
+    )
+    if pdf_bytes is not None:
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name=f"query_report_{idx + 1}.pdf",
+            mime="application/pdf",
+            key=f"download_pdf_{idx}",
+        )
+    else:
+        st.markdown("*PDF export unavailable for this query.*")
+
+
 if "history" not in st.session_state:
     st.session_state.history = []
+if "query_history" not in st.session_state:
+    st.session_state.query_history = []
 if "db_ready" not in st.session_state:
     init_db()
     st.session_state.db_ready = True
@@ -252,12 +421,34 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 💡 Example questions")
     for s in SUGGESTIONS:
-        if st.button(s, key=f"sug_{s}", use_container_width=True):
+        if st.button(s, key=f"sug_{s}", width="stretch"):
             st.session_state["prefill"] = s
 
     st.markdown("---")
-    if st.button("🗑️ Clear conversation", use_container_width=True):
+    st.markdown("### 🎤 Voice-to-SQL")
+    st.caption(
+        "Speak naturally:\n\n"
+        "- Top customers by revenue\n"
+        "- Revenue by category\n"
+        "- Monthly sales trend"
+    )
+    if whisper is not None:
+        st.caption("Local Whisper transcription is available if installed.")
+
+    st.markdown("---")
+    st.markdown("### 🕘 Query History")
+    if st.session_state.query_history:
+        for idx, item in enumerate(reversed(st.session_state.query_history[-10:])):
+            history_key = f"history_use_{len(st.session_state.query_history)-idx-1}"
+            if st.button(item["question"], key=history_key, width="stretch"):
+                st.session_state["prefill"] = item["question"]
+    else:
+        st.info("No previous queries yet.")
+
+    st.markdown("---")
+    if st.button("🗑️ Clear conversation", width="stretch"):
         st.session_state.history = []
+        st.session_state.query_history = []
         st.rerun()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -281,7 +472,7 @@ c4.metric("Products", kpis["products"])
 
 st.markdown("---")
 
-for item in st.session_state.history:
+for idx, item in enumerate(st.session_state.history):
     if item["role"] == "user":
         st.markdown(
             f'<div class="user-bubble"><span class="bubble-tag">You</span> {item["content"]}</div>',
@@ -303,16 +494,28 @@ for item in st.session_state.history:
                 f'<div class="sql-block">{item["sql"]}</div>',
                 unsafe_allow_html=True,
             )
+            if st.button("Explain SQL", key=f"explain_sql_{idx}"):
+                try:
+                    explanation = explain_sql(item["sql"], api_key, model=model)
+                    st.session_state.history[idx]["sql_explanation"] = explanation
+                except Exception as exc:
+                    st.session_state.history[idx]["sql_explanation"] = f"Error: {exc}"
+            if item.get("sql_explanation"):
+                st.markdown(
+                    f'**SQL explanation:**<br>{item["sql_explanation"]}',
+                    unsafe_allow_html=True,
+                )
         if item.get("error"):
             st.error(item["error"])
         elif item.get("df") is not None and not item["df"].empty:
-            st.dataframe(item["df"], use_container_width=True, hide_index=True)
+            st.dataframe(item["df"], width="stretch", hide_index=True)
+            _create_export_buttons(idx, item)
         if item.get("chart") is not None:
-            st.plotly_chart(item["chart"], use_container_width=True)
+            st.plotly_chart(item["chart"], width="stretch")
 
 st.markdown("---")
 prefill = st.session_state.pop("prefill", "")
-col_q, col_run = st.columns([5, 1])
+col_q, col_voice, col_run = st.columns([4, 1, 1])
 with col_q:
     question = st.text_input(
         "Question",
@@ -320,8 +523,21 @@ with col_q:
         placeholder="e.g. Which product categories drive the most revenue?",
         label_visibility="collapsed",
     )
+with col_voice:
+    voice_input = st.button("🎤 Voice", width="stretch")
+
 with col_run:
-    submit = st.button("▶ Ask", type="primary", use_container_width=True)
+    submit = st.button("▶ Ask", type="primary", width="stretch")
+
+if voice_input:
+    spoken_text = speech_to_text()
+    if spoken_text:
+        st.session_state["prefill"] = spoken_text
+        st.session_state["spoken_text"] = spoken_text
+        st.rerun()
+
+if st.session_state.get("spoken_text"):
+    st.success(f"Recognized: {st.session_state['spoken_text']}")
 
 if submit and question.strip():
     if not api_key:
@@ -343,15 +559,22 @@ if submit and question.strip():
                         result.get("chart_y", ""),
                         result.get("chart_title", "Chart"),
                     )
-                st.session_state.history.append(
+                assistant_item = {
+                    "role": "assistant",
+                    "question": question,
+                    "content": result.get("answer", "Here are your results."),
+                    "sql": sql,
+                    "df": df if df is not None else pd.DataFrame(),
+                    "chart": chart,
+                    "error": err,
+                    "tools": out.get("tool_trace", []),
+                }
+                st.session_state.history.append(assistant_item)
+                st.session_state.query_history.append(
                     {
-                        "role": "assistant",
-                        "content": result.get("answer", "Here are your results."),
+                        "question": question,
                         "sql": sql,
-                        "df": df if df is not None else pd.DataFrame(),
-                        "chart": chart,
-                        "error": err,
-                        "tools": out.get("tool_trace", []),
+                        "answer": assistant_item["content"],
                     }
                 )
             except Exception as exc:

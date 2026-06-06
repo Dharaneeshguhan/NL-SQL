@@ -10,6 +10,10 @@ Streamlit app that lets business users ask analytics questions in plain English.
 - **Tool-using agent** — `list_tables`, `describe_table`, `run_sql` before answering
 - **Read-only SQLite** — sample e-commerce warehouse
 - **Light modern UI** — violet & teal theme, KPI cards, Plotly charts
+- **Voice-to-SQL support** — speak questions and get SQL + dashboard results
+- **Query history** — access previous questions and reuse them quickly
+- **Export results** — download query results as PDF or Excel
+- **SQL explanation** — inspect generated SQL with a plain-English explanation
 
 ## Setup
 
@@ -25,6 +29,13 @@ pip install -r requirements.txt
 
 ```bash
 set OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+For Windows voice input, install PyAudio with `pipwin` if needed:
+
+```bash
+pip install pipwin
+pipwin install pyaudio
 ```
 
 Optional default model:

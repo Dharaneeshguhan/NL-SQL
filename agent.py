@@ -129,6 +129,30 @@ def _client(api_key: str) -> OpenAI:
     )
 
 
+def explain_sql(sql: str, api_key: str, model: str | None = None) -> str:
+    client = _client(api_key)
+    model_id = resolve_model(model)
+    prompt = (
+        "Explain this SQL query in plain English. Describe what it selects, "
+        "any joins or filters, aggregations, and the meaning of key columns. "
+        "Keep the explanation concise and avoid formatting as code."
+    )
+    messages = [
+        {"role": "system", "content": "You are a helpful SQL explainer."},
+        {"role": "user", "content": f"{prompt}\n\nSQL:\n{sql}"},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_tokens=500,
+        )
+    except Exception as exc:
+        raise RuntimeError(_format_api_error(model_id, exc)) from exc
+    choice = response.choices[0]
+    return (choice.message.content or "").strip()
+
+
 def _format_api_error(model_id: str, exc: Exception) -> str:
     if isinstance(exc, APIStatusError):
         body = exc.body
