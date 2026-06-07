@@ -1,6 +1,6 @@
 # InsightSQL Agent
 
-** NL-to-SQL Analytics Agent** - Ask business questions in plain English, get safe SQL, interactive charts, and AI-powered insights. Built with Python, Streamlit, SQLite, and Llama3 (Ollama) or OpenRouter.
+**NL-to-SQL Analytics Agent** - Ask business questions in plain English, get safe SQL, interactive charts, and AI-powered insights. Built with Python, Streamlit, SQLite, and Llama3 (Ollama) or OpenRouter.
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white" alt="Python"/>
