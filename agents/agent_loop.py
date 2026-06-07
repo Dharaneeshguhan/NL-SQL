@@ -7,7 +7,7 @@
 Step 1: Read database schema
 
 Step 2: Understand user question
-
+ 
 Step 3: Generate SQL
 
 Step 4: Validate SQL
