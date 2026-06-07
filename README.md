@@ -9,6 +9,13 @@
   <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenRouter-4338CA?style=flat" alt="LLM"/>
 </p>
 
+## 📸 Project Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/pic1.png" width="30%">
+  <img src="assets/screenshots/pic2.png" width="30%">
+  <img src="assets/screenshots/pic3.png" width="30%">
+</p>
 ---
 ## 🏗️ System Architecture
 
