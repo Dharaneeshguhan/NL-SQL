@@ -6,7 +6,7 @@ DATABASE SCHEMA:
 CONTEXT:
 - All monetary values are in Indian Rupees (Rs / INR): total_amount, unit_price, salary.
 - Employee names are Tamil: Dhana, Priya, Rithan, Yoga, Gopi, Jaya, Dharshana, Gayu, Loki, Koushi, Dharshini, Karthik, Meena, Arun, Kavitha.
-
+  
 RULES:
 1. Output ONLY a single SQLite SELECT or WITH ... SELECT statement.
 2. Do NOT use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, or any DDL/DML.
