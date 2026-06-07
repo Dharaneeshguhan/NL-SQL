@@ -12,9 +12,9 @@
 ## Project Screenshots
 
 <p align="center">
-  <img src="output/pic1.png" width="30%">
-  <img src="output/pic2.png" width="30%">
-  <img src="output/pic3.png" width="30%">
+  <img src="Output/pic1.png" width="30%">
+  <img src="Output/pic2.png" width="30%">
+  <img src="Output/pic3.png" width="30%">
 </p>
 ---
 
