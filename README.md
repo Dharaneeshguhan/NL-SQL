@@ -1,6 +1,6 @@
 # InsightSQL Agent
 
-> ** NL-to-SQL Analytics Agent** - Ask business questions in plain English, get safe SQL, interactive charts, and AI-powered insights. Built with Python, Streamlit, SQLite, and Llama3 (Ollama) or OpenRouter.
+** NL-to-SQL Analytics Agent** - Ask business questions in plain English, get safe SQL, interactive charts, and AI-powered insights. Built with Python, Streamlit, SQLite, and Llama3 (Ollama) or OpenRouter.
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white" alt="Python"/>
@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenRouter-4338CA?style=flat" alt="LLM"/>
 </p>
 
-## 📸 Project Screenshots
+## Project Screenshots
 
 <p align="center">
   <img src="pic1.png" width="30%">
@@ -18,7 +18,7 @@
 </p>
 ---
 
-## 🏗️ System Architecture
+##  System Architecture
 
 The InsightSQL Agent follows a secure 7-step workflow to convert natural language questions into SQL queries, execute them safely, and generate business insights.
 
