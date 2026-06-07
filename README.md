@@ -12,9 +12,9 @@
 ## 📸 Project Screenshots
 
 <p align="center">
-  <img src="assets/screenshots/pic1.png" width="30%">
-  <img src="assets/screenshots/pic2.png" width="30%">
-  <img src="assets/screenshots/pic3.png" width="30%">
+  <img src="pic1.png" width="30%">
+  <img src="pic2.png" width="30%">
+  <img src="pic3.png" width="30%">
 </p>
 ---
 
