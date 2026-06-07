@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-
+ 
 from config.constants import APP_NAME, SAMPLE_QUESTIONS
 from utils.formatting import (
     dataframe_to_csv_bytes,
