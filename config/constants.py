@@ -4,7 +4,7 @@ APP_NAME = "InsightSQL Agent"
 APP_TAGLINE = "Ask in English. Get SQL, charts & business insights."
 CURRENCY_LABEL = "Rs"
 CURRENCY_SYMBOL = "Rs"
-
+ 
 OPENROUTER_MODELS = [
     "google/gemini-2.5-flash-lite",
 ]
