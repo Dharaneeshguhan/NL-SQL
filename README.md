@@ -17,6 +17,7 @@
   <img src="assets/screenshots/pic3.png" width="30%">
 </p>
 ---
+
 ## 🏗️ System Architecture
 
 The InsightSQL Agent follows a secure 7-step workflow to convert natural language questions into SQL queries, execute them safely, and generate business insights.
