@@ -423,7 +423,7 @@ with st.sidebar:
     st.caption("Powered by **[OpenRouter](https://openrouter.ai)** — pick a free or paid model")
     st.markdown("---")
 
-    st.markdown("### � Upload CSV")
+    st.markdown("### Upload CSV")
     st.caption("Upload a CSV file and query it as a new SQLite table.")
     csv_file = st.file_uploader(
         "Upload CSV",
@@ -449,7 +449,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### �📋 Schema explorer")
+    st.markdown("### 📋 Schema explorer")
     for tname, tdata in get_table_info().items():
         with st.expander(f"**{tname}** · {tdata['count']} rows"):
             for col in tdata["columns"]:
