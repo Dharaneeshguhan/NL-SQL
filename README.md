@@ -1,4 +1,4 @@
-# InsightSQL Agent
+# SQL Agent
 
 **NL-to-SQL Analytics Agent** - Ask business questions in plain English, get safe SQL, interactive charts, and AI-powered insights. Built with Python, Streamlit, SQLite, and Llama3 (Ollama) or OpenRouter.
 
