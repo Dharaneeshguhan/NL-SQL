@@ -1,669 +1,396 @@
-"""NL-to-SQL Analytics Agent — Streamlit UI."""
+"""NL-to-SQL Analytics Agent Streamlit entry point."""
 
-import io
-import html
-import os
+from __future__ import annotations
+
+import os 
 import sys
-import tempfile
+import traceback
 
-# UTF-8 on Windows (prevents ascii codec errors with API / unicode text)
 if sys.platform == "win32":
     os.environ.setdefault("PYTHONUTF8", "1")
 
-import pandas as pd
-import plotly.express as px
 import streamlit as st
-import textwrap
-from openpyxl.utils import get_column_letter
+from dotenv import load_dotenv
 
 try:
     import speech_recognition as sr
-except ImportError:
+except ImportError:  # pragma: no cover - handled in the Streamlit UI
     sr = None
 
 try:
-    import whisper
-except ImportError:
-    whisper = None
+    import sounddevice as sd
+except ImportError:  # pragma: no cover - handled in the Streamlit UI
+    sd = None
 
-try:
-    from fpdf import FPDF
-except ImportError:
-    FPDF = None
-
-from agent import (
-    explain_sql,
-    generate_business_insights,
-    resolve_model,
-    run_analytics_agent,
+from agents.agent_loop import run_agent_loop
+from agents.llm_client import LLMClient
+from config.constants import APP_NAME, OLLAMA_MODELS, OPENROUTER_MODELS
+from ui.components import (
+    render_assistant_response,
+    render_hero,
+    render_kpis,
+    render_query_box,
+    render_query_history_sidebar,
+    render_sample_questions,
+    render_selected_history,
 )
-from database import (
+from ui.styles import CUSTOM_CSS
+from utils.database import (
+    get_table_info,
     init_db,
     kpi_metrics,
-    run_query,
-    upload_csv_to_db,
-    get_table_info,
+    load_csv_to_sqlite,
+    get_uploaded_tables,
+    clear_all_uploaded_tables,
+    is_uploaded_table,
+    UPLOADED_TABLES_KEY,
 )
+from utils.errors import AnalyticsAgentError, LLMConnectionError
+from utils.history import add_entry, clear_history
+from utils.sql_explainer import explain_sql_locally
 
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="NL-to-SQL Analytics Agent",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-st.markdown(
-    """
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-    html, body, [class*="css"] { font-family: 'Outfit', sans-serif; color: #1e1b4b; }
-    .stApp {
-        background: linear-gradient(165deg, #fff7ed 0%, #fdf4ff 40%, #f0fdfa 100%);
-    }
-    [data-testid="stSidebar"] {
-        background: #ffffff;
-        border-right: 1px solid #e9d5ff;
-        box-shadow: 4px 0 24px rgba(124, 58, 237, 0.06);
-    }
-    [data-testid="stSidebar"] .stMarkdown h2 {
-        color: #7c3aed !important;
-        font-weight: 700;
-    }
-    [data-testid="stSidebar"] .stCaption { color: #6b7280; }
-
-    .hero {
-        background: linear-gradient(120deg, #7c3aed 0%, #a855f7 45%, #14b8a6 100%);
-        border-radius: 20px;
-        padding: 32px 36px;
-        margin-bottom: 28px;
-        box-shadow: 0 12px 40px rgba(124, 58, 237, 0.25);
-        position: relative;
-        overflow: hidden;
-    }
-    .hero::after {
-        content: '';
-        position: absolute; right: -20px; top: -20px;
-        width: 200px; height: 200px;
-        background: rgba(255,255,255,0.12);
-        border-radius: 50%;
-    }
-    .hero h1 {
-        margin: 0;
-        font-size: 2rem;
-        font-weight: 700;
-        color: #ffffff;
-        letter-spacing: -0.02em;
-    }
-    .hero p { color: rgba(255,255,255,0.92); margin: 10px 0 0; font-size: 1.05rem; max-width: 640px; }
-
-    div[data-testid="stMetric"] {
-        background: #ffffff;
-        border: 1px solid #e9d5ff;
-        border-radius: 16px;
-        padding: 18px 22px;
-        box-shadow: 0 4px 20px rgba(124, 58, 237, 0.08);
-    }
-    div[data-testid="stMetric"] label { color: #6b7280 !important; font-weight: 500; }
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-        color: #7c3aed !important;
-        font-weight: 700;
-    }
-
-    .bubble-tag {
-        font-size: 0.7rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        opacity: 0.85;
-        margin-right: 6px;
-    }
-    .user-bubble {
-        background: linear-gradient(135deg, #7c3aed, #a855f7);
-        color: #ffffff;
-        padding: 14px 20px;
-        border-radius: 20px 20px 4px 20px;
-        margin: 10px 0 10px 40px;
-        font-size: 0.95rem;
-        line-height: 1.55;
-        box-shadow: 0 6px 20px rgba(124, 58, 237, 0.25);
-    }
-    .assistant-bubble {
-        background: #ffffff;
-        color: #374151;
-        padding: 14px 20px;
-        border-radius: 20px 20px 20px 4px;
-        margin: 10px 40px 10px 0;
-        font-size: 0.95rem;
-        line-height: 1.55;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-    }
-    .assistant-bubble .bubble-tag { color: #7c3aed; opacity: 1; }
-    .sql-label {
-        font-size: 0.68rem;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        color: #9ca3af;
-        margin: 14px 0 6px;
-        font-weight: 600;
-    }
-    .sql-block {
-        background: #1e1b4b;
-        border-left: 4px solid #14b8a6;
-        border-radius: 10px;
-        padding: 14px 18px;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 0.8rem;
-        color: #5eead4;
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-    .tool-pill {
-        display: inline-block;
-        background: #f3e8ff;
-        border: 1px solid #d8b4fe;
-        border-radius: 999px;
-        padding: 3px 12px;
-        font-size: 0.72rem;
-        color: #6b21a8;
-        margin: 2px 6px 2px 0;
-        font-weight: 500;
-    }
-    .stTextInput input, .stSelectbox > div > div {
-        background: #ffffff !important;
-        border: 1px solid #d8b4fe !important;
-        border-radius: 12px !important;
-        color: #1e1b4b !important;
-    }
-    .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #7c3aed, #14b8a6) !important;
-        border: none !important;
-        border-radius: 12px !important;
-        font-weight: 600 !important;
-        color: white !important;
-    }
-    .stButton > button[kind="primary"]:hover {
-        box-shadow: 0 6px 20px rgba(124, 58, 237, 0.35) !important;
-    }
-    hr { border-color: #e9d5ff !important; }
-    [data-testid="stDataFrame"] { border-radius: 12px; border: 1px solid #e5e7eb; }
-</style>
-""",
-    unsafe_allow_html=True,
-)
+load_dotenv()
 
 
-def make_chart(df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, title: str):
-    if not chart_type or x_col not in df.columns or y_col not in df.columns:
-        return None
-    palette = ["#7c3aed", "#a855f7", "#14b8a6", "#f97316", "#ec4899"]
-    builders = {
-        "bar": lambda: px.bar(df, x=x_col, y=y_col, title=title, color_discrete_sequence=palette),
-        "line": lambda: px.line(
-            df, x=x_col, y=y_col, title=title, markers=True, color_discrete_sequence=["#7c3aed"]
-        ),
-        "pie": lambda: px.pie(df, names=x_col, values=y_col, title=title, color_discrete_sequence=palette),
-        "scatter": lambda: px.scatter(
-            df, x=x_col, y=y_col, title=title, color_discrete_sequence=["#14b8a6"]
-        ),
-    }
-    builder = builders.get(chart_type)
-    if not builder:
-        return None
-    fig = builder()
-    fig.update_layout(
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#faf5ff",
-        font_color="#374151",
-        title_font_color="#7c3aed",
-        title_font_size=15,
-        xaxis=dict(gridcolor="#f3e8ff", tickfont_color="#6b7280"),
-        yaxis=dict(gridcolor="#f3e8ff", tickfont_color="#6b7280"),
-        margin=dict(l=48, r=24, t=56, b=48),
-        height=380,
-    )
-    return fig
+def _init_session() -> None:
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "selected_history" not in st.session_state:
+        st.session_state.selected_history = None
+    if "db_ready" not in st.session_state:
+        init_db(force=True)
+        st.session_state.db_ready = True
+    if UPLOADED_TABLES_KEY not in st.session_state:
+        st.session_state[UPLOADED_TABLES_KEY] = {}
 
 
-def _df_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Results")
-        worksheet = writer.sheets["Results"]
-        for idx, col in enumerate(df.columns, start=1):
-            column_len = max(
-                df[col].astype(str).map(len).max(),
-                len(str(col)),
-            ) + 2
-            worksheet.column_dimensions[get_column_letter(idx)].width = min(column_len, 40)
-    buffer.seek(0)
-    return buffer.read()
+def _build_llm(use_ollama: bool, model: str, api_key: str, ollama_base: str) -> LLMClient:
+    kwargs: dict = {"provider": "ollama" if use_ollama else "openrouter", "model": model}
+    if use_ollama:
+        kwargs["ollama_base"] = ollama_base
+    else:
+        kwargs["api_key"] = api_key
+    return LLMClient(**kwargs)
 
 
-def _load_whisper_model():
-    if whisper is None:
-        return None
+def _handle_csv_upload(uploaded_file) -> None:
+    """Process CSV file upload and create temporary SQLite table."""
+    if uploaded_file is None:
+        return
+    
     try:
-        return whisper.load_model("tiny")
-    except Exception:
-        return None
+        # Check file size (warn if > 50MB)
+        file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
+        if file_size_mb > 50:
+            st.warning(f"⚠️ Large file ({file_size_mb:.1f} MB) - processing may take a moment...")
+        
+        # Load CSV into SQLite
+        table_name, df, error = load_csv_to_sqlite(uploaded_file, uploaded_file.name, st.session_state)
+        
+        if error:
+            st.error(f"❌ Upload failed: {error}")
+            return
+        
+        # Success!
+        st.success(f"✅ CSV uploaded successfully as table '{table_name}'")
+        st.info(f"📊 {len(df)} rows × {len(df.columns)} columns")
+        
+        # Show dataframe preview
+        with st.expander(f"Preview: {uploaded_file.name}", expanded=True):
+            st.dataframe(df.head(10), use_container_width=True)
+            if len(df) > 10:
+                st.caption(f"Showing 10 of {len(df)} rows")
+        
+        # Rerun to update schema explorer
+        st.rerun()
+        
+    except Exception as exc:
+        st.error(f"❌ Unexpected error: {str(exc)}")
 
-_whisper_model = None
+
+def _process_question(question: str, llm: LLMClient) -> dict:
+    """Run the agent loop with step-by-step status UI and robust error handling."""
+    assistant_payload: dict = {
+        "role": "assistant",
+        "question": question,
+        "content": "",
+        "sql": None,
+        "sql_explanation": None,
+        "df": None,
+        "chart": None,
+        "error": None,
+        "error_hint": None,
+        "findings": [],
+        "steps": [],
+    }
+
+    try:
+        with st.status("Running analysis...", expanded=True) as status:
+            st.write("Reading schema and preparing SQL...")
+            out = run_agent_loop(question, llm)
+
+            for step in out.steps:
+                if step.status == "done":
+                    st.success(f"Step {step.step}: {step.name}")
+                elif step.status == "error":
+                    st.error(f"Step {step.step}: {step.name} - {step.detail}")
+                else:
+                    st.info(f"Step {step.step}: {step.name}")
+
+            assistant_payload["steps"] = [
+                {"step": s.step, "name": s.name, "status": s.status, "detail": s.detail}
+                for s in out.steps
+            ]
+
+            if out.error:
+                status.update(label="Query failed", state="error")
+                assistant_payload["content"] = "I couldn't complete that query."
+                assistant_payload["error"] = out.error
+                assistant_payload["sql"] = out.sql or None
+                add_entry(question, out.sql, "", 0, False, out.error)
+                return assistant_payload
+
+            insights = out.insights or {}
+            assistant_payload["content"] = insights.get("summary", "Here are your results.")
+            assistant_payload["sql"] = out.sql
+            assistant_payload["df"] = out.df
+            assistant_payload["chart"] = out.chart
+            assistant_payload["findings"] = insights.get("key_findings", [])
+
+            row_count = len(out.df) if out.df is not None else 0
+            add_entry(question, out.sql, assistant_payload["content"], row_count, True)
+            status.update(label="Analysis complete", state="complete")
+
+    except LLMConnectionError as exc:
+        assistant_payload["content"] = "Analysis engine failed."
+        assistant_payload["error"] = exc.user_message()
+        add_entry(question, None, "", 0, False, str(exc))
+    except AnalyticsAgentError as exc:
+        assistant_payload["content"] = "Agent error."
+        assistant_payload["error"] = exc.user_message()
+        add_entry(question, None, "", 0, False, str(exc))
+    except Exception as exc:
+        assistant_payload["content"] = "Unexpected error."
+        assistant_payload["error"] = str(exc)
+        assistant_payload["error_hint"] = "Try rephrasing your question."
+        add_entry(question, None, "", 0, False, str(exc))
+        if os.environ.get("DEBUG"):
+            st.code(traceback.format_exc())
+
+    return assistant_payload
 
 
-def speech_to_text() -> str:
+def _capture_voice_query() -> str | None:
+    """Capture microphone audio and return recognized speech as text."""
     if sr is None:
-        st.error("SpeechRecognition is not installed.")
-        return ""
+        st.error(
+            "Voice input is unavailable because SpeechRecognition is not installed. "
+            "Install the updated requirements and restart the app."
+        )
+        return None
+    if sd is None:
+        st.error(
+            "Voice input is unavailable because the microphone recorder dependency is "
+            "not installed. Install the updated requirements and restart the app."
+        )
+        return None
 
     recognizer = sr.Recognizer()
+    sample_rate = 16_000
+    duration_seconds = 8
 
     try:
-        with sr.Microphone() as source:
-            st.info("🎤 Listening... Speak now")
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(
-                source,
-                timeout=5,
-                phrase_time_limit=10,
-            )
+        sd.query_devices(kind="input")
+        st.info("Listening... speak your question clearly.")
+        recording = sd.rec(
+            int(duration_seconds * sample_rate),
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+        )
+        sd.wait()
+        audio = sr.AudioData(recording.tobytes(), sample_rate, 2)
+    except OSError as exc:
+        st.error(
+            "Microphone access failed. Check that a microphone is connected and that "
+            f"your system has granted permission. Details: {exc}"
+        )
+        return None
+    except Exception as exc:
+        st.error(
+            "I could not record from the microphone. Check device permissions and try "
+            f"again. Details: {exc}"
+        )
+        return None
 
-        st.info("🔄 Converting speech to text...")
-
-        if whisper is not None:
-            global _whisper_model
-            if _whisper_model is None:
-                _whisper_model = _load_whisper_model()
-            if _whisper_model:
-                wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    tmp.write(wav_bytes)
-                    tmp_path = tmp.name
-                try:
-                    result = _whisper_model.transcribe(tmp_path)
-                    return result.get("text", "").strip()
-                finally:
-                    os.remove(tmp_path)
-
-        text = recognizer.recognize_google(audio)
-        return text
-
-    except sr.WaitTimeoutError:
-        st.error("No speech detected.")
-        return ""
-
+    try:
+        recognized_text = recognizer.recognize_google(audio).strip()
     except sr.UnknownValueError:
-        st.error("Could not understand audio.")
-        return ""
+        st.warning("I could not understand the audio. Please try again or type your question.")
+        return None
+    except sr.RequestError as exc:
+        st.error(
+            "Speech recognition could not reach the recognition service. "
+            f"Check your internet connection and try again. Details: {exc}"
+        )
+        return None
 
-    except Exception as e:
-        st.error(f"Voice Error: {e}")
-        return ""
+    if not recognized_text:
+        st.warning("No speech was recognized. Please try again or type your question.")
+        return None
 
-
-def _sql_report_pdf(question: str, answer: str, sql: str, df: pd.DataFrame) -> bytes:
-    if FPDF is None:
-        raise RuntimeError("PDF export is unavailable because the FPDF library is not installed.")
-
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "NL-to-SQL Query Report")
-    pdf.ln(10)
-    pdf.set_font("Helvetica", size=11)
-    pdf.multi_cell(0, 8, f"Question: {question}")
-    pdf.ln(1)
-    pdf.multi_cell(0, 8, f"Answer: {answer}")
-    pdf.ln(1)
-    pdf.multi_cell(0, 8, "SQL Query:")
-    pdf.set_font("Helvetica", size=10)
-    safe_sql = textwrap.fill(sql.replace("\n", " "), width=90, break_long_words=True, replace_whitespace=False)
-    pdf.multi_cell(0, 6, safe_sql)
-    if not df.empty:
-        pdf.ln(2)
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, "Result preview:")
-        pdf.ln(8)
-        pdf.set_font("Helvetica", size=9)
-        preview = df.head(20)
-        for _, row in preview.iterrows():
-            row_text = " | ".join(str(value) for value in row.tolist())
-            safe_row = textwrap.fill(row_text, width=90, break_long_words=True, replace_whitespace=False)
-            if pdf.get_y() > pdf.h - 30:
-                pdf.add_page()
-            pdf.multi_cell(0, 6, safe_row)
-    output = pdf.output(dest="S")
-    if isinstance(output, str):
-        return output.encode("latin-1")
-    return output
+    st.session_state.question_input = recognized_text
+    st.success("Voice captured. You can edit the question before clicking Ask.")
+    return recognized_text
 
 
-def _create_export_buttons(idx: int, item: dict) -> None:
-    if item.get("df") is None or item["df"].empty:
+def _run_query_flow(question: str, use_ollama: bool, model: str, api_key: str, ollama_base: str) -> None:
+    llm = _build_llm(use_ollama, model, api_key, ollama_base)
+    ok, msg = llm.is_available()
+    if not ok:
+        st.warning(msg)
         return
-    excel_bytes = _df_to_excel_bytes(item["df"])
-    pdf_bytes = None
-    try:
-        pdf_bytes = _sql_report_pdf(
-            item.get("question", ""),
-            item.get("content", ""),
-            item.get("sql", ""),
-            item["df"],
-        )
-    except Exception:
-        pdf_bytes = None
-
-    st.download_button(
-        label="Download Excel",
-        data=excel_bytes,
-        file_name=f"query_results_{idx + 1}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"download_xlsx_{idx}",
-    )
-    if pdf_bytes is not None:
-        st.download_button(
-            label="Download PDF",
-            data=pdf_bytes,
-            file_name=f"query_report_{idx + 1}.pdf",
-            mime="application/pdf",
-            key=f"download_pdf_{idx}",
-        )
-    else:
-        st.markdown("*PDF export unavailable for this query.*")
+    st.session_state.messages.append({"role": "user", "content": question})
+    st.session_state.messages.append(_process_question(question, llm))
 
 
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "query_history" not in st.session_state:
-    st.session_state.query_history = []
-if "db_ready" not in st.session_state:
-    init_db()
-    st.session_state.db_ready = True
+def _render_messages(use_ollama: bool, model: str, api_key: str, ollama_base: str) -> None:
+    for idx, item in enumerate(st.session_state.messages):
+        with st.chat_message(item["role"]):
+            st.markdown(item["content"])
+            if item["role"] != "assistant":
+                continue
 
-OPENROUTER_MODELS = [
-    "google/gemini-2.5-flash",
-    "google/gemini-2.5-flash-lite",
-    "google/gemini-3.5-flash",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "moonshotai/kimi-k2.6:free",
-    "qwen/qwen-2.5-7b-instruct",
-]
-
-SUGGESTIONS = [
-    "Top 5 customers by revenue",
-    "Monthly sales trend in 2024",
-    "Revenue by product category",
-    "Products with low stock (under 20)",
-    "Average order value by customer segment",
-    "Count of orders by status",
-]
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🗄️ Analytics Agent")
-    st.caption("Schema-grounded NL → SQL")
-
-    api_key = st.text_input(
-        "OpenRouter API Key",
-        type="password",
-        value=os.environ.get("OPENROUTER_API_KEY", ""),
-        placeholder="sk-or-... or set OPENROUTER_API_KEY",
-        help="Get a key at https://openrouter.ai/keys",
-    )
-    default_model = resolve_model(os.environ.get("OPENROUTER_MODEL"))
-    model_idx = (
-        OPENROUTER_MODELS.index(default_model)
-        if default_model in OPENROUTER_MODELS
-        else 0
-    )
-    model = st.selectbox("Model", OPENROUTER_MODELS, index=model_idx)
-    st.caption("Powered by **[OpenRouter](https://openrouter.ai)** — pick a free or paid model")
-    st.markdown("---")
-
-    st.markdown("### Upload CSV")
-    st.caption("Upload a CSV file and query it as a new SQLite table.")
-    csv_file = st.file_uploader(
-        "Upload CSV",
-        type=["csv"],
-        help="The uploaded CSV will be loaded into a SQLite table that the AI can query.",
-    )
-    if csv_file is not None:
-        file_key = f"{csv_file.name}:{csv_file.size}"
-        if st.session_state.get("uploaded_file_key") != file_key:
-            with st.spinner("Loading CSV and creating a SQLite table..."):
+            render_assistant_response(item, idx)
+            if item.get("sql") and st.button("Explain SQL", key=f"explain_sql_{idx}"):
+                fallback = explain_sql_locally(item["sql"])
                 try:
-                    table_name, preview = upload_csv_to_db(csv_file)
-                    st.session_state["uploaded_file_key"] = file_key
-                    st.session_state["uploaded_table_name"] = table_name
-                    st.session_state["uploaded_preview"] = preview
-                    st.success(f"CSV uploaded successfully as table `{table_name}`.")
-                    st.info("The uploaded table is now available in the schema explorer and can be queried naturally.")
+                    explainer = _build_llm(use_ollama, model, api_key, ollama_base)
+                    ok, msg = explainer.is_available()
+                    if not ok:
+                        st.session_state.messages[idx]["sql_explanation"] = (
+                            f"{fallback}\n\nAI explanation was unavailable: {msg}"
+                        )
+                    else:
+                        explanation = explainer.explain_sql(item["sql"]).strip()
+                        st.session_state.messages[idx]["sql_explanation"] = explanation or fallback
                 except Exception as exc:
-                    st.error(f"CSV upload failed: {exc}")
-                    st.session_state.pop("uploaded_file_key", None)
-                    st.session_state.pop("uploaded_table_name", None)
-                    st.session_state.pop("uploaded_preview", None)
-
-    st.markdown("---")
-
-    st.markdown("### 📋 Schema explorer")
-    for tname, tdata in get_table_info().items():
-        with st.expander(f"**{tname}** · {tdata['count']} rows"):
-            for col in tdata["columns"]:
-                pk = " 🔑" if col[5] else ""
-                st.markdown(f"`{col[1]}` · *{col[2]}*{pk}")
-
-    st.markdown("---")
-    st.markdown("### 💡 Example questions")
-    for s in SUGGESTIONS:
-        if st.button(s, key=f"sug_{s}", width="stretch"):
-            st.session_state["prefill"] = s
-
-    st.markdown("---")
-    st.markdown("### 🎤 Voice-to-SQL")
-    st.caption(
-        "Speak naturally:\n\n"
-        "- Top customers by revenue\n"
-        "- Revenue by category\n"
-        "- Monthly sales trend"
-    )
-    if whisper is not None:
-        st.caption("Local Whisper transcription is available if installed.")
-
-    st.markdown("---")
-    st.markdown("### 🕘 Query History")
-    if st.session_state.query_history:
-        for idx, item in enumerate(reversed(st.session_state.query_history[-10:])):
-            history_key = f"history_use_{len(st.session_state.query_history)-idx-1}"
-            if st.button(item["question"], key=history_key, width="stretch"):
-                st.session_state["prefill"] = item["question"]
-    else:
-        st.info("No previous queries yet.")
-
-    st.markdown("---")
-    if st.button("🗑️ Clear conversation", width="stretch"):
-        st.session_state.history = []
-        st.session_state.query_history = []
-        st.rerun()
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-st.markdown(
-    """
-<div class="hero">
-  <h1>NL-to-SQL Analytics Agent</h1>
-  <p>Ask in plain English. The agent inspects your SQLite schema with tools,
-  writes safe read-only SQL, and returns answers with charts when it helps.</p>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-kpis = kpi_metrics()
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Completed orders", kpis["orders"])
-c2.metric("Total revenue", f"${kpis['revenue']:,.2f}")
-c3.metric("Customers", kpis["customers"])
-c4.metric("Products", kpis["products"])
-
-if st.session_state.get("uploaded_preview") is not None:
-    st.markdown("### 📄 Uploaded CSV Preview")
-    st.write(f"Table: `{st.session_state.get('uploaded_table_name', 'uploaded_table')}`")
-    st.dataframe(st.session_state["uploaded_preview"], width="stretch")
-    st.markdown("---")
-else:
-    st.markdown("---")
-
-for idx, item in enumerate(st.session_state.history):
-    if item["role"] == "user":
-        st.markdown(
-            f'<div class="user-bubble"><span class="bubble-tag">You</span> {item["content"]}</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            f'<div class="assistant-bubble"><span class="bubble-tag">Agent</span> {item["content"]}</div>',
-            unsafe_allow_html=True,
-        )
-        if item.get("tools"):
-            pills = "".join(
-                f'<span class="tool-pill">{t["tool"]}</span>' for t in item["tools"]
-            )
-            st.markdown(f"**Agent tools used:** {pills}", unsafe_allow_html=True)
-        if item.get("sql"):
-            st.markdown(
-                f'<div class="sql-label">Generated SQL</div>'
-                f'<div class="sql-block">{item["sql"]}</div>',
-                unsafe_allow_html=True,
-            )
-            if st.button("Explain SQL", key=f"explain_sql_{idx}"):
-                try:
-                    explanation = explain_sql(item["sql"], api_key, model=model)
-                    st.session_state.history[idx]["sql_explanation"] = explanation
-                except Exception as exc:
-                    st.session_state.history[idx]["sql_explanation"] = f"Error: {exc}"
-            if item.get("sql_explanation"):
-                st.markdown(
-                    f'**SQL explanation:**<br>{item["sql_explanation"]}',
-                    unsafe_allow_html=True,
-                )
-        if item.get("error"):
-            st.error(item["error"])
-        elif item.get("df") is not None and not item["df"].empty:
-            st.dataframe(item["df"], width="stretch", hide_index=True)
-            _create_export_buttons(idx, item)
-        if item.get("chart") is not None:
-            st.plotly_chart(item["chart"], width="stretch")
-        if item.get("business_insights"):
-            with st.container():
-                st.markdown("### 📈 AI Business Insights")
-                insight_lines = "".join(
-                    f"<li style='margin-bottom:8px;'>{html.escape(insight)}</li>"
-                    for insight in item["business_insights"]
-                )
-                st.markdown(
-                    f"<div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-top:16px;'><ul style='margin:0;padding-left:18px;line-height:1.7;'>{insight_lines}</ul></div>",
-                    unsafe_allow_html=True,
-                )
-
-st.markdown("---")
-if "prefill" not in st.session_state:
-    st.session_state.prefill = ""
-prefill = st.session_state.prefill
-
-# If a voice recognition run placed a pending question, move it into the
-# canonical `question_input` BEFORE we create the text input widget. This
-# avoids Streamlit errors about modifying widget-backed session state after
-# the widget is instantiated.
-if st.session_state.get("pending_question"):
-    st.session_state["question_input"] = st.session_state.pop("pending_question")
-
-col_q, col_voice, col_run = st.columns([4, 1, 1])
-with col_q:
-    st.text_input(
-        "Question",
-        key="question_input",
-        placeholder="e.g. Which product categories drive the most revenue?",
-        label_visibility="collapsed",
-    )
-with col_voice:
-    voice_input = st.button("🎤 Voice", width="stretch")
-
-with col_run:
-    submit = st.button("▶ Ask", type="primary", width="stretch")
-
-if voice_input:
-    spoken_text = speech_to_text()
-    if spoken_text:
-        # Store under a pending key so we can transfer it before the
-        # `question_input` widget is created on the next rerun.
-        st.session_state["pending_question"] = spoken_text
-        st.session_state.spoken_text = spoken_text
-        st.rerun()
-
-if st.session_state.get("spoken_text"):
-    st.success(f"Recognized: {st.session_state['spoken_text']}")
-
-question = st.session_state.get("question_input", "")
-
-if submit and question.strip():
-    if not api_key:
-        st.warning("Add your OpenRouter API key in the sidebar or set `OPENROUTER_API_KEY`.")
-    else:
-        st.session_state.history.append({"role": "user", "content": question})
-        with st.spinner("Agent is exploring schema and building SQL…"):
-            try:
-                out = run_analytics_agent(question, api_key, model=model)
-                result = out["result"]
-                sql = result.get("sql", "")
-                df, err = run_query(sql) if sql else (pd.DataFrame(), None)
-                chart = None
-                if df is not None and not df.empty and result.get("chart_type"):
-                    chart = make_chart(
-                        df,
-                        result["chart_type"],
-                        result.get("chart_x", ""),
-                        result.get("chart_y", ""),
-                        result.get("chart_title", "Chart"),
+                    st.session_state.messages[idx]["sql_explanation"] = (
+                        f"{fallback}\n\nAI explanation failed: {exc}"
                     )
-                business_insights = []
-                if df is not None and not df.empty:
-                    try:
-                        business_insights = generate_business_insights(df, api_key, model=model)
-                    except Exception as exc:
-                        business_insights = [f"Insights unavailable: {exc}"]
+                st.rerun()
 
-                assistant_item = {
-                    "role": "assistant",
-                    "question": question,
-                    "content": result.get("answer", "Here are your results."),
-                    "sql": sql,
-                    "df": df if df is not None else pd.DataFrame(),
-                    "chart": chart,
-                    "error": err,
-                    "tools": out.get("tool_trace", []),
-                    "business_insights": business_insights,
-                }
-                st.session_state.history.append(assistant_item)
-                st.session_state.query_history.append(
-                    {
-                        "question": question,
-                        "sql": sql,
-                        "answer": assistant_item["content"],
-                    }
-                )
-            except Exception as exc:
-                st.session_state.history.append(
-                    {
-                        "role": "assistant",
-                        "content": "I could not complete that request.",
-                        "sql": None,
-                        "df": None,
-                        "chart": None,
-                        "error": str(exc),
-                        "tools": [],
-                    }
-                )
+
+def main() -> None:
+    st.set_page_config(
+        page_title=APP_NAME,
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    st.markdown(f"<style>{CUSTOM_CSS}</style>", unsafe_allow_html=True)
+    _init_session()
+
+    with st.sidebar:
+        st.markdown(f"## {APP_NAME}")
+        st.caption("Natural language to SQL insights")
+
+        provider = st.radio("LLM Provider", ["OpenRouter (cloud)", "Ollama (local Llama3)"])
+        use_ollama = provider.startswith("Ollama")
+        api_key = ""
+        ollama_base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        if use_ollama:
+            model = st.selectbox("Ollama Model", OLLAMA_MODELS)
+            ollama_base = st.text_input("Ollama URL", value=ollama_base)
+        else:
+            api_key = st.text_input(
+                "OpenRouter API Key",
+                type="password",
+                value=os.environ.get("OPENROUTER_API_KEY", ""),
+                placeholder="sk-or-v1-...",
+            )
+            model = st.selectbox("OpenRouter Model", OPENROUTER_MODELS)
+
+        st.markdown("---")
+        st.markdown("### 📤 Upload CSV Data")
+        uploaded_csv = st.file_uploader(
+            "Choose a CSV file",
+            type=["csv"],
+            accept_multiple_files=False,
+            help="Upload a CSV file to create a temporary SQLite table for analysis"
+        )
+        if uploaded_csv is not None:
+            _handle_csv_upload(uploaded_csv)
+        
+        st.markdown("---")
+        st.markdown("### Schema explorer")
+        
+        # Get table info
+        table_info = get_table_info()
+        uploaded_tables = get_uploaded_tables(st.session_state)
+        
+        # Display uploaded tables first with special styling
+        if uploaded_tables:
+            st.markdown("**Uploaded Tables:**")
+            for tname, tdata in table_info.items():
+                if is_uploaded_table(tname):
+                    meta = uploaded_tables.get(tname, {})
+                    filename = meta.get("filename", tname)
+                    with st.expander(f"📊 {tname} - {tdata['count']} rows (from {filename})"):
+                        for col in tdata["columns"]:
+                            pk = " (PK)" if col[5] else ""
+                            st.markdown(f"`{col[1]}` - {col[2]}{pk}")
+            st.divider()
+        
+        # Display built-in tables
+        builtin_count = 0
+        for tname, tdata in table_info.items():
+            if not is_uploaded_table(tname):
+                with st.expander(f"{tname} - {tdata['count']} rows"):
+                    for col in tdata["columns"]:
+                        pk = " (PK)" if col[5] else ""
+                        st.markdown(f"`{col[1]}` - {col[2]}{pk}")
+                builtin_count += 1
+        
+        if builtin_count == 0:
+            st.caption("No built-in tables available")
+
+        st.markdown("---")
+        render_sample_questions()
+        st.markdown("---")
+        render_query_history_sidebar()
+        st.markdown("---")
+        if st.button("Clear results", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.selected_history = None
+            st.rerun()
+        if st.button("Clear query history", use_container_width=True):
+            clear_history()
+            st.session_state.selected_history = None
+            st.toast("History cleared")
+            st.rerun()
+        if get_uploaded_tables(st.session_state):
+            if st.button("Clear uploaded data", use_container_width=True, type="secondary"):
+                count, error = clear_all_uploaded_tables(st.session_state)
+                st.toast(f"Cleared {count} uploaded table(s)")
+                st.rerun()
+
+    render_hero()
+    render_kpis(kpi_metrics())
+    typed, ask_clicked = render_query_box(on_voice_click=_capture_voice_query)
+    render_selected_history()
+    _render_messages(use_ollama, model, api_key, ollama_base)
+
+    auto_ask = st.session_state.pop("auto_ask", None)
+    if auto_ask:
+        _run_query_flow(auto_ask.strip(), use_ollama, model, api_key, ollama_base)
         st.rerun()
+
+    if ask_clicked and typed.strip():
+        _run_query_flow(typed.strip(), use_ollama, model, api_key, ollama_base)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()

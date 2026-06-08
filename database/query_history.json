@@ -1,0 +1,42 @@
+[
+  {
+    "id": "c6f6fcd0",
+    "timestamp": "2026-06-06T16:01:44.239403+00:00",
+    "question": "top 5 order with customer",
+    "sql": "SELECT o.id AS order_id, c.name AS customer_name, o.order_date, o.total FROM orders o JOIN customers c ON o.customer_id = c.id ORDER BY o.total DESC LIMIT 5",
+    "summary": "The top 5 orders by total value are identified, with Frank Liu appearing twice, indicating significant spending from this customer. The highest order value is Rs 4549.93, and the top 5 orders collectively represent a substantial portion of revenue, highlighting the importance of these high-value transactions and customers.",
+    "row_count": 5,
+    "success": true,
+    "error": null
+  },
+  {
+    "id": "834e593e",
+    "timestamp": "2026-06-06T16:43:30.365065+00:00",
+    "question": "hello can you give me the top 10  employee",
+    "sql": "",
+    "summary": "",
+    "row_count": 0,
+    "success": false,
+    "error": "OpenRouter (google/gemini-2.5-flash-lite): Connection error."
+  },
+  {
+    "id": "b934e7fc",
+    "timestamp": "2026-06-06T16:45:26.737381+00:00",
+    "question": "hello can you give me the top 10  employee",
+    "sql": "",
+    "summary": "",
+    "row_count": 0,
+    "success": false,
+    "error": "OpenRouter (google/gemini-2.5-flash-lite): Connection error."
+  },
+  {
+    "id": "bc4077cb",
+    "timestamp": "2026-06-06T16:50:06.720502+00:00",
+    "question": "TOP 10 EMPLOYEE BY SALARY",
+    "sql": "SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 10",
+    "summary": "The top 10 highest-paid employees have been identified, with Yoga earning the highest salary at Rs 1,050,000. This list highlights the employees who represent the highest salary expenditure for the company. Understanding this distribution is crucial for compensation strategy and budget allocation.",
+    "row_count": 10,
+    "success": true,
+    "error": null
+  }
+]
